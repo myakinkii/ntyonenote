@@ -1,0 +1,60 @@
+@baseURL = https://graph.microsoft.com/v1.0/
+@authentication = Bearer {{$dotenv TOKEN}}
+
+### get metadata
+GET {{baseURL}}/$metadata
+Authorization: {{authentication}}
+
+### get profie
+GET {{baseURL}}/me
+Authorization: {{authentication}}
+
+### get notebooks
+GET {{baseURL}}/me/onenote/notebooks
+Authorization: {{authentication}}
+
+### get sections
+GET {{baseURL}}/me/onenote/sections
+Authorization: {{authentication}}
+
+### get TST section
+# @name tstSection
+GET {{baseURL}}/me/onenote/sections?$filter=displayName eq '_md TST'
+Authorization: {{authentication}}
+
+### save TST pages url
+@pagesUrl = {{tstSection.response.body.value[0].pagesUrl}}
+
+### get pages from TST
+GET {{pagesUrl}}
+Authorization: {{authentication}}
+
+### get MD-TST page
+# @name mdtstPage
+GET {{pagesUrl}}?$filter=title eq 'Wrapper test'
+Authorization: {{authentication}}
+
+### save MD-TST content url
+@contentUrl = {{mdtstPage.response.body.value[0].contentUrl}}
+
+### get content
+# @name pageContent
+GET {{contentUrl}}?includeIDs=true
+Authorization: {{authentication}}
+
+### extract magic id for wrapper
+### $x('string(//p[@data-id="markdown-content"]/@id)')
+@contentId = {{pageContent.response.body.//p[@data-id="markdown-content"]/@id}}
+
+### update content with new markdown
+PATCH {{contentUrl}}
+Authorization: {{authentication}}
+Content-Type: application/json
+
+[
+  {
+    "target": "{{contentId}}",
+    "action": "replace",
+    "content": "<p data-id=\"markdown-content\">## Your fresh overwritten markdown here</p>"
+  }
+]
