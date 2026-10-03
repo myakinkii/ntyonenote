@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
+import MarkdownEditor from '@/components/MarkdownEditor.vue'
 import { useNotesStore } from '@/stores/notes'
 
 const notes = useNotesStore()
@@ -50,13 +51,7 @@ function commitTitle() {
     </menu>
     <div class="window tab-panel" role="tabpanel">
       <div class="window-body">
-        <textarea
-          v-if="tab === 'edit'"
-          v-model="notes.markdown"
-          class="source"
-          spellcheck="false"
-          :placeholder="notes.hasMagic ? '' : 'Empty page. Type some markdown and save.'"
-        />
+        <MarkdownEditor v-if="tab === 'edit'" v-model="notes.markdown" />
         <!-- eslint-disable-next-line vue/no-v-html -- sanitized by DOMPurify -->
         <div v-else class="preview" v-html="preview" />
       </div>
@@ -97,22 +92,10 @@ function commitTitle() {
   min-height: 0;
 }
 
-.source,
 .preview {
   flex: 1;
   width: 100%;
   min-height: 0;
-}
-
-.source {
-  resize: none;
-  font-family: 'Fixedsys Excelsior', 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.35;
-  tab-size: 4;
-}
-
-.preview {
   overflow: auto;
   background: white;
   padding: 4px 12px;
@@ -145,7 +128,6 @@ function commitTitle() {
 
 /* iOS zooms into inputs below 16px */
 @media (pointer: coarse) {
-  .source,
   .title-row input {
     font-size: 16px;
   }

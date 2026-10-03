@@ -29,6 +29,41 @@ const windowTitle = computed(() => {
   return `${page}ntyonenote`
 })
 
+const PANES_KEY = 'ntyonenote.panes'
+
+function storedPanes(): { sections: boolean; pages: boolean } {
+  try {
+    return { sections: true, pages: true, ...JSON.parse(localStorage.getItem(PANES_KEY) ?? '{}') }
+  } catch {
+    return { sections: true, pages: true }
+  }
+}
+
+/** side panes shown on wide screens */
+const shown = ref(storedPanes())
+
+watch(
+  shown,
+  (value) => {
+    try {
+      localStorage.setItem(PANES_KEY, JSON.stringify(value))
+    } catch {
+      // storage unavailable, keep it for this run only
+    }
+  },
+  { deep: true },
+)
+
+const columns = computed(() =>
+  [
+    shown.value.sections && 'minmax(160px, 220px)',
+    shown.value.pages && 'minmax(200px, 280px)',
+    '1fr',
+  ]
+    .filter(Boolean)
+    .join(' '),
+)
+
 function back() {
   pane.value = pane.value === 'editor' ? 'pages' : 'sections'
 }
@@ -98,14 +133,30 @@ onBeforeUnmount(() => {
         <button :disabled="!notes.dirty" @click="notes.save()">💾 Save</button>
         <button :disabled="!notes.page" @click="notes.deletePage()">🗑️ Delete</button>
         <button :disabled="!notes.section" @click="notes.refreshPages()">🔄 Refresh</button>
+        <span class="pane-toggles">
+          <button
+            :class="{ pressed: shown.sections }"
+            :aria-pressed="shown.sections"
+            @click="shown.sections = !shown.sections"
+          >
+            📓 Notebooks
+          </button>
+          <button
+            :class="{ pressed: shown.pages }"
+            :aria-pressed="shown.pages"
+            @click="shown.pages = !shown.pages"
+          >
+            📝 Pages
+          </button>
+        </span>
       </div>
 
-      <div class="panes" :data-pane="pane">
-        <fieldset class="pane sections">
+      <div class="panes" :data-pane="pane" :style="{ '--columns': columns }">
+        <fieldset class="pane sections" :class="{ hidden: !shown.sections }">
           <legend>Notebooks</legend>
           <SectionTree @picked="pane = 'pages'" />
         </fieldset>
-        <fieldset class="pane pages">
+        <fieldset class="pane pages" :class="{ hidden: !shown.pages }">
           <legend>{{ notes.section?.displayName ?? 'Pages' }}</legend>
           <PageList @picked="pane = 'editor'" />
         </fieldset>
@@ -156,7 +207,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(160px, 220px) minmax(200px, 280px) 1fr;
+  grid-template-columns: var(--columns);
   gap: var(--pane-gap);
 }
 
@@ -180,8 +231,32 @@ fieldset.pane > :deep(:not(legend)) {
   display: none;
 }
 
+.pane-toggles {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* 98-style latched button */
+.pane-toggles button.pressed {
+  box-shadow:
+    inset -1px -1px #fff,
+    inset 1px 1px #0a0a0a,
+    inset -2px -2px #dfdfdf,
+    inset 2px 2px grey;
+  background-image: repeating-conic-gradient(#fff 0% 25%, silver 0% 50%);
+  background-size: 2px 2px;
+}
+
 .status-bar-field:first-child {
   flex: 3;
+}
+
+/* toggles are for wide screens, phones navigate with Back */
+@media (min-width: 761px) {
+  .pane.hidden {
+    display: none;
+  }
 }
 
 /* phones: one pane at a time */
@@ -198,6 +273,10 @@ fieldset.pane > :deep(:not(legend)) {
 
   .back {
     display: inline-block;
+  }
+
+  .pane-toggles {
+    display: none;
   }
 
   .status-bar-field:nth-child(3) {
