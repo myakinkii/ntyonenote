@@ -1,0 +1,34 @@
+@import '98.css/dist/98.css';
+
+:root {
+  --desktop: #008080;
+  --surface: #c0c0c0;
+  --pane-gap: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--desktop);
+  overflow: hidden;
+  /* iOS notch / home indicator */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  -webkit-font-smoothing: none;
+}
+
+/* 98.css sizes everything for desktop mice; give fingers a bit more room */
+@media (pointer: coarse) {
+  button {
+    min-height: 32px;
+  }
+}

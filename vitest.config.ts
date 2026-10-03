@@ -3,7 +3,8 @@ import { mergeConfig, defineConfig, configDefaults } from 'vitest/config'
 import viteConfig from './vite.config.ts'
 
 export default mergeConfig(
-  viteConfig,
+  // 'build' keeps the dev Graph token out of tests
+  viteConfig({ command: 'build', mode: 'test' }),
   defineConfig({
     test: {
       environment: 'jsdom',
