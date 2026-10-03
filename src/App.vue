@@ -103,9 +103,10 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
   if (notes.dirty) e.preventDefault()
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('keydown', onKey)
   window.addEventListener('beforeunload', onBeforeUnload)
+  await auth.init()
   if (!auth.needsToken) connect()
 })
 

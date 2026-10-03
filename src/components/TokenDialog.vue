@@ -6,7 +6,15 @@ import { useAuthStore } from '@/stores/auth'
 const emit = defineEmits<{ connected: [] }>()
 
 const auth = useAuthStore()
+const busy = ref(false)
 const value = ref('')
+
+async function signIn() {
+  busy.value = true
+  await auth.signIn()
+  busy.value = false
+  if (!auth.needsToken) emit('connected')
+}
 
 function submit() {
   if (!value.value.trim()) return
@@ -23,20 +31,32 @@ function submit() {
         <div class="title-bar-text">Connect to OneNote</div>
       </div>
       <div class="window-body">
-        <p>🔑 Paste a Microsoft Graph access token (Notes.ReadWrite).</p>
-        <p class="hint">
-          Your token is missing or expired. Tokens last about an hour; in dev, updating TOKEN in
-          .env and restarting works too.
-        </p>
-        <form @submit.prevent="submit">
-          <div class="field-row-stacked">
-            <label for="token">Access token</label>
-            <textarea id="token" v-model="value" rows="5" spellcheck="false" />
-          </div>
+        <template v-if="auth.canSignIn">
+          <p>🔑 Sign in with your personal Microsoft account to open your notebooks.</p>
+          <p v-if="auth.error" class="error">⚠️ {{ auth.error }}</p>
           <section class="buttons">
-            <button type="submit" class="default" :disabled="!value.trim()">Connect</button>
+            <button class="default" :disabled="busy" @click="signIn">
+              {{ busy ? 'Signing in...' : 'Sign in with Microsoft' }}
+            </button>
           </section>
-        </form>
+        </template>
+
+        <details :open="!auth.canSignIn">
+          <summary>Paste a Graph access token instead</summary>
+          <p class="hint">
+            Notes.ReadWrite token, e.g. from Graph Explorer. Tokens last about an hour; in dev,
+            updating TOKEN in .env and restarting works too.
+          </p>
+          <form @submit.prevent="submit">
+            <div class="field-row-stacked">
+              <label for="token">Access token</label>
+              <textarea id="token" v-model="value" rows="5" spellcheck="false" />
+            </div>
+            <section class="buttons">
+              <button type="submit" :disabled="!value.trim()">Connect</button>
+            </section>
+          </form>
+        </details>
       </div>
     </div>
   </div>
@@ -58,6 +78,14 @@ function submit() {
 
 .hint {
   color: #444;
+}
+
+.error {
+  color: #a00;
+}
+
+details {
+  margin-top: 12px;
 }
 
 textarea {

@@ -33,7 +33,7 @@ export class GraphError extends Error {
   }
 }
 
-export type TokenProvider = () => string | null
+export type TokenProvider = () => Promise<string | null>
 
 export function isMdSection(section: Section): boolean {
   return section.displayName.startsWith(MD_SECTION_PREFIX)
@@ -41,7 +41,7 @@ export function isMdSection(section: Section): boolean {
 
 export function createGraphClient(getToken: TokenProvider) {
   async function request(url: string, init: RequestInit = {}): Promise<Response> {
-    const token = getToken()
+    const token = await getToken()
     if (!token) throw new GraphError(401, 'No access token')
     const res = await fetch(url.startsWith('http') ? url : BASE_URL + url, {
       ...init,
