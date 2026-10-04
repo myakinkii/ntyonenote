@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import PixelIcon from '@/components/PixelIcon.vue'
 import { useNotesStore } from '@/stores/notes'
 
 // Blocks the app while a section is converted: the pipeline holds the ledger for the whole run,
@@ -22,9 +23,9 @@ const percent = computed(() => {
       </div>
       <div class="window-body">
         <div class="animation" aria-hidden="true">
-          <span>📁</span>
-          <span class="page">📄</span>
-          <span>📁</span>
+          <PixelIcon name="folder" :size="32" />
+          <PixelIcon class="page" name="page" :size="20" />
+          <PixelIcon name="folder" :size="32" />
         </div>
         <p class="current">{{ notes.conversion?.total ? notes.conversion.title || 'Untitled' : 'Reading the section...' }}</p>
         <p>From "{{ notes.conversion?.from }}" to "{{ notes.conversion?.to }}"</p>
@@ -63,14 +64,12 @@ const percent = computed(() => {
   position: relative;
   display: flex;
   justify-content: space-between;
-  font-size: 28px;
   padding: 4px 24px 8px;
 }
 
 .page {
   position: absolute;
-  top: 12px;
-  font-size: 18px;
+  top: 10px;
   animation: fly 1.4s linear infinite;
 }
 

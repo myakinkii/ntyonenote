@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import logo from '@/assets/logo-32.png'
 import ConvertDialog from '@/components/ConvertDialog.vue'
 import MessageBox from '@/components/MessageBox.vue'
 import PageEditor from '@/components/PageEditor.vue'
@@ -125,7 +126,10 @@ onBeforeUnmount(() => {
 <template>
   <div class="window app-window">
     <div class="title-bar">
-      <div class="title-bar-text">📒 {{ windowTitle }}</div>
+      <div class="title-bar-text">
+        <img class="app-icon" :src="logo" alt="" width="16" height="16" />
+        {{ windowTitle }}
+      </div>
       <div class="title-bar-controls">
         <button aria-label="Minimize" />
         <button aria-label="Maximize" />
@@ -256,6 +260,11 @@ fieldset.pane > :deep(:not(legend)) {
     inset 2px 2px grey;
   background-image: repeating-conic-gradient(#fff 0% 25%, silver 0% 50%);
   background-size: 2px 2px;
+}
+
+.app-icon {
+  vertical-align: middle;
+  margin: -2px 3px 0 0;
 }
 
 .status-bar-field:first-child {

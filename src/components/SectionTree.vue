@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PixelIcon from '@/components/PixelIcon.vue'
 import type { Section } from '@/sync/connector'
 import { useNotesStore } from '@/stores/notes'
 
@@ -31,7 +32,7 @@ async function pick(section: Section) {
             :title="notes.isSyncable(section) ? section.displayName : 'Not an _md section, click to convert it into one'"
             @click="pick(section)"
           >
-            {{ notes.isSyncable(section) ? '📁' : '🔒' }} {{ section.displayName }}
+            <PixelIcon name="folder" :muted="!notes.isSyncable(section)" /> {{ section.displayName }}
           </li>
         </ul>
       </details>
