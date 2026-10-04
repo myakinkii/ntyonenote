@@ -170,7 +170,7 @@ function createTurndown(warn: (w: Warning) => void): TurndownService {
     codeBlockStyle: 'fenced',
     emDelimiter: '*',
     strongDelimiter: '**',
-    br: '\\',
+    br: '',
   })
   // text is kept as typed: old notes often contain markdown written by hand (C7.3)
   td.escape = (text) => text

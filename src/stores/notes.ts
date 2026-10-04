@@ -60,8 +60,9 @@ export const useNotesStore = defineStore('notes', () => {
 
   /** set while a section is being converted, aborting it stops after the current page */
   const converting = ref<AbortController | null>(null)
-  /** pages done of all pages while converting, for the progress bar */
-  const progress = ref<{ done: number; total: number } | null>(null)
+  /** what the convert dialog shows; the dialog blocks the app while it runs */
+  const conversion = ref<{ from: string; to: string; done: number; total: number; title: string } | null>(null)
+  const stopping = ref(false)
 
   const busy = ref(0)
   const status = ref('Ready')
@@ -270,6 +271,8 @@ export const useNotesStore = defineStore('notes', () => {
 
     const controller = new AbortController()
     converting.value = controller
+    stopping.value = false
+    conversion.value = { from: source.displayName, to: name, done: 0, total: 0, title: '' }
     const again = answer === 'again'
     const target = {
       notebookId: notebook.id,
@@ -283,13 +286,13 @@ export const useNotesStore = defineStore('notes', () => {
         again,
         signal: controller.signal,
         onProgress: (done, total, title) => {
-          progress.value = { done, total }
+          conversion.value = { from: source.displayName, to: name, done, total, title }
           status.value = `Converting ${done} of ${total}: ${title || 'Untitled'}`
         },
       })
     })
     converting.value = null
-    progress.value = null
+    conversion.value = null
     await refresh()
     if (!result) return
 
@@ -311,6 +314,7 @@ export const useNotesStore = defineStore('notes', () => {
   }
 
   function stopConverting() {
+    stopping.value = true
     converting.value?.abort()
   }
 
@@ -508,7 +512,8 @@ export const useNotesStore = defineStore('notes', () => {
     busy,
     status,
     converting,
-    progress,
+    conversion,
+    stopping,
     dirty,
     isSyncable,
     init,

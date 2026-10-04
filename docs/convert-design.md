@@ -91,8 +91,10 @@ Online only, one page at a time, for one section.
    A create isn't retried on `5xx`, it may have gone through.
 6. **Network rules.** On `429` wait `Retry-After`; on `5xx` back off and retry a few times, then
    record the page as failed and continue; on `401` pause until signed in; offline pauses.
-7. **Progress and cancel.** The status shows "Converting 37 of 412". Cancel stops after the
-   current page. Running it again resumes (C5.2).
+7. **Progress and cancel.** A blocking dialog shows the page, "From X to _md X" and a progress
+   bar. It blocks on purpose: the run holds the ledger in memory and commits it per page, so a
+   save, rename or new page meanwhile would be overwritten. Stop finishes the current page and
+   ends the run. Running it again resumes (C5.2).
 8. **Summary.** "412 converted, 37 with warnings, 2 failed". Failed pages are listed with the
    reason and are retried by the next run.
 9. **Merge.** At the end of a run that committed anything on `import`, `import` is merged into
