@@ -24,6 +24,13 @@ watch(
   (id) => id && (pane.value = 'editor'),
 )
 
+const syncState = computed(() => {
+  if (notes.dirty) return 'Modified'
+  if (notes.merge) return '⚠️ Merging'
+  if (notes.unsynced.length) return `↑ ${notes.unsynced.length} to sync`
+  return notes.section ? 'In sync' : ''
+})
+
 const windowTitle = computed(() => {
   const page = notes.page ? `${notes.dirty ? '*' : ''}${notes.page.title || 'Untitled'} - ` : ''
   return `${page}ntyonenote`
@@ -106,6 +113,7 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   window.addEventListener('beforeunload', onBeforeUnload)
+  await notes.init()
   await auth.init()
   if (!auth.needsToken) connect()
 })
@@ -130,10 +138,10 @@ onBeforeUnmount(() => {
     <div class="window-body app-body">
       <div class="toolbar">
         <button v-if="pane !== 'sections'" class="back" @click="back">◀ Back</button>
-        <button :disabled="!notes.section" @click="newPage">📄 New</button>
+        <button :disabled="!notes.section || !!notes.merge" @click="newPage">📄 New</button>
         <button :disabled="!notes.dirty" @click="notes.save()">💾 Save</button>
-        <button :disabled="!notes.page" @click="notes.deletePage()">🗑️ Delete</button>
-        <button :disabled="!notes.section" @click="notes.refreshPages()">🔄 Refresh</button>
+        <button :disabled="!notes.page || !!notes.merge" @click="notes.deletePage()">🗑️ Delete</button>
+        <button :disabled="!notes.section || !!notes.merge" @click="notes.sync()">🔄 Sync</button>
         <span class="pane-toggles">
           <button
             :class="{ pressed: shown.sections }"
@@ -169,7 +177,7 @@ onBeforeUnmount(() => {
 
     <div class="status-bar">
       <p class="status-bar-field">{{ notes.busy ? '⏳ ' : '' }}{{ notes.status }}</p>
-      <p class="status-bar-field">{{ notes.dirty ? 'Modified' : notes.page ? 'Saved' : '' }}</p>
+      <p class="status-bar-field">{{ syncState }}</p>
       <p class="status-bar-field">{{ notes.markdown.length }} chars</p>
       <p class="status-bar-field">👤 {{ auth.userName || 'Offline' }}</p>
     </div>

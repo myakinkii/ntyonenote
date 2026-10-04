@@ -36,7 +36,10 @@ const formatDate = (iso: string) =>
           :class="{ highlighted: notes.page?.id === page.id }"
           @click="pick(page)"
         >
-          <td>📝 {{ page.title || 'Untitled' }}</td>
+          <td>
+            {{ notes.conflicted.has(page.id) ? '⚠️' : '📝' }} {{ page.title || 'Untitled' }}
+            <span v-if="notes.unsynced.includes(page.id)" title="Not synced yet">↑</span>
+          </td>
           <td class="modified">{{ formatDate(page.lastModifiedDateTime) }}</td>
         </tr>
       </tbody>

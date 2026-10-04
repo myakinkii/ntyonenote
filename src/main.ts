@@ -1,3 +1,6 @@
+// must run before anything imports isomorphic-git
+import './polyfills'
+
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 

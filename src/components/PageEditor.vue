@@ -3,12 +3,13 @@ import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
+import ConflictsPanel from '@/components/ConflictsPanel.vue'
 import MarkdownEditor from '@/components/MarkdownEditor.vue'
+import PageHistory from '@/components/PageHistory.vue'
 import { useNotesStore } from '@/stores/notes'
 
 const notes = useNotesStore()
 
-const tab = ref<'edit' | 'preview'>('edit')
 const title = ref('')
 
 watch(
@@ -18,7 +19,7 @@ watch(
 )
 
 const preview = computed(() =>
-  tab.value === 'preview' ? DOMPurify.sanitize(marked.parse(notes.markdown, { async: false })) : '',
+  notes.tab === 'preview' ? DOMPurify.sanitize(marked.parse(notes.markdown, { async: false })) : '',
 )
 
 function commitTitle() {
@@ -42,18 +43,26 @@ function commitTitle() {
     </div>
 
     <menu role="tablist">
-      <li role="tab" :aria-selected="tab === 'edit'">
-        <a href="#" @click.prevent="tab = 'edit'">Edit</a>
+      <li role="tab" :aria-selected="notes.tab === 'edit'">
+        <a href="#" @click.prevent="notes.tab = 'edit'">Edit</a>
       </li>
-      <li role="tab" :aria-selected="tab === 'preview'">
-        <a href="#" @click.prevent="tab = 'preview'">Preview</a>
+      <li role="tab" :aria-selected="notes.tab === 'preview'">
+        <a href="#" @click.prevent="notes.tab = 'preview'">Preview</a>
+      </li>
+      <li role="tab" :aria-selected="notes.tab === 'history'">
+        <a href="#" @click.prevent="notes.tab = 'history'">History</a>
+      </li>
+      <li v-if="notes.merge" role="tab" :aria-selected="notes.tab === 'conflicts'">
+        <a href="#" @click.prevent="notes.tab = 'conflicts'">⚠️ Conflicts</a>
       </li>
     </menu>
     <div class="window tab-panel" role="tabpanel">
       <div class="window-body">
-        <MarkdownEditor v-if="tab === 'edit'" v-model="notes.markdown" />
+        <MarkdownEditor v-if="notes.tab === 'edit'" v-model="notes.markdown" />
         <!-- eslint-disable-next-line vue/no-v-html -- sanitized by DOMPurify -->
-        <div v-else class="preview" v-html="preview" />
+        <div v-else-if="notes.tab === 'preview'" class="preview" v-html="preview" />
+        <PageHistory v-else-if="notes.tab === 'history'" />
+        <ConflictsPanel v-else />
       </div>
     </div>
   </div>
