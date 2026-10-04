@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { isMdSection, type Section } from '@/graph/client'
+import type { Section } from '@/sync/connector'
 import { useNotesStore } from '@/stores/notes'
 
 const emit = defineEmits<{ picked: [] }>()
@@ -7,16 +7,16 @@ const emit = defineEmits<{ picked: [] }>()
 const notes = useNotesStore()
 
 async function pick(section: Section) {
-  if (isMdSection(section) && (await notes.selectSection(section))) emit('picked')
+  if (notes.isSyncable(section) && (await notes.selectSection(section))) emit('picked')
 }
 </script>
 
 <template>
   <ul class="tree-view section-tree">
-    <li v-if="!notes.notebooks.length" class="empty">
-      {{ notes.busy ? 'Loading...' : 'No notebooks' }}
+    <li v-if="!notes.tree.length" class="empty">
+      {{ notes.busy ? 'Syncing...' : 'No notebooks yet, press 🔄 Sync' }}
     </li>
-    <li v-for="notebook in notes.notebooks" :key="notebook.id">
+    <li v-for="notebook in notes.tree" :key="notebook.id">
       <details open>
         <summary>📓 {{ notebook.displayName }}</summary>
         <ul>
@@ -25,12 +25,12 @@ async function pick(section: Section) {
             :key="section.id"
             :class="{
               selected: notes.section?.id === section.id,
-              foreign: !isMdSection(section),
+              foreign: !notes.isSyncable(section),
             }"
-            :title="isMdSection(section) ? section.displayName : 'Not an _md section, read only in OneNote'"
+            :title="notes.isSyncable(section) ? section.displayName : 'Not an _md section, read only in OneNote'"
             @click="pick(section)"
           >
-            {{ isMdSection(section) ? '📁' : '🔒' }} {{ section.displayName }}
+            {{ notes.isSyncable(section) ? '📁' : '🔒' }} {{ section.displayName }}
           </li>
         </ul>
       </details>

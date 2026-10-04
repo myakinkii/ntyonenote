@@ -22,10 +22,9 @@ const preview = computed(() =>
   notes.tab === 'preview' ? DOMPurify.sanitize(marked.parse(notes.markdown, { async: false })) : '',
 )
 
-function commitTitle() {
+async function commitTitle() {
   const next = title.value.trim()
-  if (next) notes.renamePage(next)
-  else title.value = notes.page?.title ?? ''
+  if (!next || !(await notes.renamePage(next))) title.value = notes.page?.title ?? ''
 }
 </script>
 

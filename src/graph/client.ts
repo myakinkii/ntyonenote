@@ -33,20 +33,37 @@ export class GraphError extends Error {
   }
 }
 
+/** OneNote (or the sign-in service) could not be reached */
+export class OfflineError extends Error {
+  constructor() {
+    super("Can't reach OneNote, you seem to be offline.")
+  }
+}
+
 export type TokenProvider = () => Promise<string | null>
 
-export function isMdSection(section: Section): boolean {
+export function isMdSection(section: { displayName: string }): boolean {
   return section.displayName.startsWith(MD_SECTION_PREFIX)
 }
 
 export function createGraphClient(getToken: TokenProvider) {
   async function request(url: string, init: RequestInit = {}): Promise<Response> {
-    const token = await getToken()
+    let token: string | null
+    let res: Response
+    try {
+      token = await getToken()
+    } catch {
+      throw new OfflineError()
+    }
     if (!token) throw new GraphError(401, 'No access token')
-    const res = await fetch(url.startsWith('http') ? url : BASE_URL + url, {
-      ...init,
-      headers: { Authorization: `Bearer ${token}`, ...init.headers },
-    })
+    try {
+      res = await fetch(url.startsWith('http') ? url : BASE_URL + url, {
+        ...init,
+        headers: { Authorization: `Bearer ${token}`, ...init.headers },
+      })
+    } catch {
+      throw new OfflineError()
+    }
     if (!res.ok) {
       let message = res.statusText
       try {
@@ -74,11 +91,28 @@ export function createGraphClient(getToken: TokenProvider) {
       return res.value
     },
 
+    /** All pages of a section, newest first, following OData paging */
     async pages(section: Section): Promise<PageSummary[]> {
-      const res = await getJson<{ value: PageSummary[] }>(
-        `${section.pagesUrl}?$select=id,title,contentUrl,lastModifiedDateTime&$orderby=lastModifiedDateTime desc&$top=100`,
-      )
-      return res.value
+      const pages: PageSummary[] = []
+      let url: string | undefined =
+        `${section.pagesUrl}?$select=id,title,contentUrl,lastModifiedDateTime&$orderby=lastModifiedDateTime desc&$top=100`
+      while (url) {
+        const res: { value: PageSummary[]; '@odata.nextLink'?: string } = await getJson(url)
+        pages.push(...res.value)
+        url = res['@odata.nextLink']
+      }
+      return pages
+    },
+
+    /** false only when OneNote says 404, listings can lag behind */
+    async pageExists(pageId: string): Promise<boolean> {
+      try {
+        await request(`/me/onenote/pages/${pageId}?$select=id`)
+        return true
+      } catch (e) {
+        if (e instanceof GraphError && e.status === 404) return false
+        throw e
+      }
     },
 
     async pageContent(page: PageSummary): Promise<MagicContent> {
@@ -86,8 +120,8 @@ export function createGraphClient(getToken: TokenProvider) {
       return extractMagicContent(await res.text())
     },
 
-    /** Saves markdown, returns fresh magic content (paragraph id changes on every replace) */
-    async savePageContent(page: PageSummary, markdown: string): Promise<MagicContent> {
+    /** Replaces the page's markdown (the magic paragraph id changes on every replace) */
+    async savePageContent(page: PageSummary, markdown: string): Promise<void> {
       // id may be stale if someone saved meanwhile, so always look it up right before patching
       const current = await this.pageContent(page)
       const command = current.id
@@ -98,7 +132,6 @@ export function createGraphClient(getToken: TokenProvider) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify([command]),
       })
-      return this.pageContent(page)
     },
 
     async renamePage(page: PageSummary, title: string): Promise<void> {

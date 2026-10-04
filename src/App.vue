@@ -28,7 +28,7 @@ const syncState = computed(() => {
   if (notes.dirty) return 'Modified'
   if (notes.merge) return '⚠️ Merging'
   if (notes.unsynced.length) return `↑ ${notes.unsynced.length} to sync`
-  return notes.section ? 'In sync' : ''
+  return `Last sync: ${lastSync.value}`
 })
 
 const windowTitle = computed(() => {
@@ -75,15 +75,11 @@ function back() {
   pane.value = pane.value === 'editor' ? 'pages' : 'sections'
 }
 
-async function connect() {
-  try {
-    await auth.loadUser()
-  } catch {
-    auth.tokenRejected()
-    return
-  }
-  await notes.loadNotebooks()
-}
+const lastSync = computed(() =>
+  notes.lastSync
+    ? new Date(notes.lastSync).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+    : 'never',
+)
 
 async function newPage() {
   const title = await dialog.prompt('New Page', 'Page title:', 'New page')
@@ -113,9 +109,10 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   window.addEventListener('beforeunload', onBeforeUnload)
+  // local only: the network is touched when you press Sync
   await notes.init()
-  await auth.init()
-  if (!auth.needsToken) connect()
+  // back from a web sign-in that a Sync asked for: carry on with it
+  if (await auth.init()) notes.sync()
 })
 
 onBeforeUnmount(() => {
@@ -141,7 +138,7 @@ onBeforeUnmount(() => {
         <button :disabled="!notes.section || !!notes.merge" @click="newPage">📄 New</button>
         <button :disabled="!notes.dirty" @click="notes.save()">💾 Save</button>
         <button :disabled="!notes.page || !!notes.merge" @click="notes.deletePage()">🗑️ Delete</button>
-        <button :disabled="!notes.section || !!notes.merge" @click="notes.sync()">🔄 Sync</button>
+        <button :disabled="!!notes.busy || !!notes.merge" @click="notes.sync()">🔄 Sync</button>
         <span class="pane-toggles">
           <button
             :class="{ pressed: shown.sections }"
@@ -179,11 +176,11 @@ onBeforeUnmount(() => {
       <p class="status-bar-field">{{ notes.busy ? '⏳ ' : '' }}{{ notes.status }}</p>
       <p class="status-bar-field">{{ syncState }}</p>
       <p class="status-bar-field">{{ notes.markdown.length }} chars</p>
-      <p class="status-bar-field">👤 {{ auth.userName || 'Offline' }}</p>
+      <p class="status-bar-field">👤 {{ auth.userName || 'Not connected' }}</p>
     </div>
   </div>
 
-  <TokenDialog v-if="auth.needsToken" @connected="connect" />
+  <TokenDialog v-if="auth.needsToken" @connected="notes.sync()" />
   <MessageBox />
 </template>
 

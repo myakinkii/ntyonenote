@@ -2,11 +2,14 @@
 import { ref, watch } from 'vue'
 
 import { useNotesStore } from '@/stores/notes'
+import type { HistoryEntry } from '@/sync/sync'
 
 const notes = useNotesStore()
 
-const commits = ref<{ oid: string; message: string; date: Date }[]>([])
-const selected = ref<string | null>(null)
+const commits = ref<HistoryEntry[]>([])
+const selected = ref<HistoryEntry | null>(null)
+
+const FROM = { local: '💻 Local', remote: '☁️ OneNote', merge: '🔀 Merge' }
 const text = ref('')
 
 watch(
@@ -19,9 +22,9 @@ watch(
   { immediate: true },
 )
 
-async function pick(oid: string) {
-  selected.value = oid
-  text.value = await notes.versionAt(oid)
+async function pick(entry: HistoryEntry) {
+  selected.value = entry
+  text.value = await notes.versionAt(entry)
 }
 
 const formatDate = (date: Date) =>
@@ -35,20 +38,22 @@ const formatDate = (date: Date) =>
         <thead>
           <tr>
             <th>Date</th>
+            <th>From</th>
             <th class="message">Change</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!commits.length">
-            <td colspan="2" class="empty">No saved versions yet</td>
+            <td colspan="3" class="empty">No saved versions yet</td>
           </tr>
           <tr
             v-for="commit in commits"
             :key="commit.oid"
-            :class="{ highlighted: selected === commit.oid }"
-            @click="pick(commit.oid)"
+            :class="{ highlighted: selected?.oid === commit.oid }"
+            @click="pick(commit)"
           >
             <td>{{ formatDate(commit.date) }}</td>
+            <td>{{ FROM[commit.from] }}</td>
             <td class="message">{{ commit.message }}</td>
           </tr>
         </tbody>

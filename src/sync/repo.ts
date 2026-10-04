@@ -1,16 +1,13 @@
 import git, { Errors, type FsClient, type TreeEntry } from 'isomorphic-git'
 
-// Local git store for markdown pages.
+// Local git store, see docs/sync-design.md (S2).
 //
-//   main     - local edits, a commit per save
-//   onenote  - mirror of what OneNote last returned ("remote without remote")
-//
-// Pages live in the main worktree as `<sectionId>/<pageId>.md`.
+//   main          - ledger.json + <sectionId>/<pageId>.md, local edits
+//   <connector>   - <sectionId>/<pageId>.md as last fetched from / sent to the remote
 
 export const MAIN = 'main'
-export const ONENOTE = 'onenote'
-
-const AUTHOR = { name: 'ntyonenote', email: 'ntyonenote@localhost' }
+/** author of commits made by the user, sync commits are authored by the connector */
+export const LOCAL_AUTHOR = 'ntyonenote'
 
 export interface PromiseFs {
   readFile(path: string, encoding: 'utf8'): Promise<string>
@@ -19,8 +16,8 @@ export interface PromiseFs {
   unlink(path: string): Promise<void>
 }
 
-/** a page change to commit: null content deletes the page */
-export interface PageChange {
+/** a file change to commit: null content deletes the file */
+export interface FileChange {
   path: string
   content: string | null
 }
@@ -31,20 +28,22 @@ export interface PendingMerge {
   conflicts: string[]
 }
 
-export function pagePath(sectionId: string, pageId: string): string {
-  return `${sectionId}/${pageId}.md`
+export interface LogEntry {
+  oid: string
+  parents: string[]
+  message: string
+  author: string
+  date: Date
 }
 
-export function pageIdOf(path: string): string {
-  return path.slice(path.indexOf('/') + 1).replace(/\.md$/, '')
-}
-
+const author = (name: string) => ({ name, email: `${name}@ntyonenote.local` })
 const decoder = new TextDecoder()
 const encoder = new TextEncoder()
 
 export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) {
   const base = { fs, dir }
   const mergeFile = `${dir}/.git/ntyonenote-merge.json`
+  const head = (ref: string) => git.resolveRef({ ...base, ref })
 
   async function exists(path: string): Promise<boolean> {
     try {
@@ -67,17 +66,25 @@ export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) 
     }
   }
 
-  /** Creates the repo with a shared empty root commit, so both branches always have a merge base */
-  async function init() {
-    if (await exists(`${dir}/.git/HEAD`)) return
-    await mkdirp(dir)
-    await git.init({ ...base, defaultBranch: MAIN })
-    const tree = await git.writeTree({ ...base, tree: [] })
-    const root = await git.commit({ ...base, message: 'Initial commit', tree, parent: [], author: AUTHOR })
-    await git.writeRef({ ...base, ref: `refs/heads/${ONENOTE}`, value: root })
+  /** Creates the repo with an empty root commit, the merge base of main and every remote branch (S2.1) */
+  async function init(remote: string) {
+    if (!(await exists(`${dir}/.git/HEAD`))) {
+      await mkdirp(dir)
+      await git.init({ ...base, defaultBranch: MAIN })
+      const tree = await git.writeTree({ ...base, tree: [] })
+      await git.commit({ ...base, message: 'Initial commit', tree, parent: [], author: author(LOCAL_AUTHOR) })
+    }
+    try {
+      await head(remote)
+    } catch {
+      const commits = await git.log({ ...base, ref: MAIN })
+      await git.writeRef({ ...base, ref: `refs/heads/${remote}`, value: commits.at(-1)!.oid })
+    }
   }
 
-  async function readPage(path: string): Promise<string | null> {
+  // --- worktree (main) ---
+
+  async function readFile(path: string): Promise<string | null> {
     try {
       return await fs.promises.readFile(`${dir}/${path}`, 'utf8')
     } catch {
@@ -85,60 +92,90 @@ export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) 
     }
   }
 
-  async function writePage(path: string, content: string) {
-    await mkdirp(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`)
+  async function writeFile(path: string, content: string | null) {
+    if (content === null) {
+      try {
+        await fs.promises.unlink(`${dir}/${path}`)
+      } catch {
+        // already gone
+      }
+      return
+    }
+    if (path.includes('/')) await mkdirp(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`)
     await fs.promises.writeFile(`${dir}/${path}`, content, 'utf8')
   }
 
-  async function deletePage(path: string) {
-    try {
-      await fs.promises.unlink(`${dir}/${path}`)
-    } catch {
-      // already gone
-    }
+  async function stage(path: string) {
+    if ((await readFile(path)) === null) await git.remove({ ...base, filepath: path })
+    else await git.add({ ...base, filepath: path })
   }
 
-  /** Commits worktree files to main; returns false when nothing changed */
-  async function commitWorktree(paths: string[], message: string): Promise<boolean> {
+  /** Writes and commits files on main; returns false when nothing changed */
+  async function commitFiles(changes: FileChange[], message: string, by = LOCAL_AUTHOR): Promise<boolean> {
     let changed = false
-    for (const path of paths) {
-      const content = await readPage(path)
+    for (const { path, content } of changes) {
+      await writeFile(path, content)
       if (content === (await readAt(MAIN, path))) continue
       changed = true
-      if (content === null) await git.remove({ ...base, filepath: path })
-      else await git.add({ ...base, filepath: path })
+      await stage(path)
     }
-    if (changed) await git.commit({ ...base, ref: `refs/heads/${MAIN}`, message, author: AUTHOR })
+    if (changed) await git.commit({ ...base, ref: `refs/heads/${MAIN}`, message, author: author(by) })
     return changed
   }
 
-  async function buildRoot(sections: Map<string, TreeEntry[]>): Promise<TreeEntry[]> {
-    const root: TreeEntry[] = []
-    for (const [path, entries] of sections) {
-      if (!entries.length) continue
-      const oid = await git.writeTree({ ...base, tree: entries })
-      root.push({ mode: '040000', path, oid, type: 'tree' })
+  // --- reading branches and commits ---
+
+  async function blobAt(commit: string, path: string): Promise<string | null> {
+    try {
+      return (await git.readBlob({ ...base, oid: commit, filepath: path })).oid
+    } catch (e) {
+      if (e instanceof Errors.NotFoundError) return null
+      throw e
     }
-    return root
+  }
+
+  async function readAtCommit(commit: string, path: string): Promise<string | null> {
+    try {
+      return decoder.decode((await git.readBlob({ ...base, oid: commit, filepath: path })).blob)
+    } catch (e) {
+      if (e instanceof Errors.NotFoundError) return null
+      throw e
+    }
+  }
+
+  async function readAt(ref: string, path: string): Promise<string | null> {
+    return readAtCommit(await head(ref), path)
+  }
+
+  /** Whether a file is the same on two branches */
+  async function sameAt(refA: string, refB: string, path: string): Promise<boolean> {
+    return (await blobAt(await head(refA), path)) === (await blobAt(await head(refB), path))
   }
 
   async function sectionsOf(ref: string): Promise<Map<string, TreeEntry[]>> {
-    const oid = await git.resolveRef({ ...base, ref })
-    const { tree } = await git.readTree({ ...base, oid })
+    const { tree } = await git.readTree({ ...base, oid: await head(ref) })
     const sections = new Map<string, TreeEntry[]>()
     for (const entry of tree) {
-      if (entry.type !== 'tree') continue
-      sections.set(entry.path, (await git.readTree({ ...base, oid: entry.oid })).tree)
+      if (entry.type === 'tree') sections.set(entry.path, (await git.readTree({ ...base, oid: entry.oid })).tree)
     }
     return sections
   }
 
-  /** Commits page changes straight onto a branch without touching the worktree */
-  async function commitToBranch(ref: string, changes: PageChange[], message: string): Promise<boolean> {
+  /** Paths of all files below section folders on a branch */
+  async function files(ref: string): Promise<Set<string>> {
+    const paths = new Set<string>()
+    for (const [section, entries] of await sectionsOf(ref)) {
+      for (const entry of entries) paths.add(`${section}/${entry.path}`)
+    }
+    return paths
+  }
+
+  /** Commits file changes in section folders straight onto a branch, without touching the worktree */
+  async function commitToBranch(ref: string, changes: FileChange[], message: string, by: string): Promise<boolean> {
     if (!changes.length) return false
     const sections = await sectionsOf(ref)
     for (const { path, content } of changes) {
-      const [section, file] = path.split('/') as [string, string]
+      const [section = '', file = ''] = path.split('/')
       const entries = (sections.get(section) ?? []).filter((e) => e.path !== file)
       if (content !== null) {
         const oid = await git.writeBlob({ ...base, blob: encoder.encode(content) })
@@ -146,58 +183,71 @@ export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) 
       }
       sections.set(section, entries)
     }
-    const tree = await git.writeTree({ ...base, tree: await buildRoot(sections) })
-    const parent = await git.resolveRef({ ...base, ref })
-    const { commit } = await git.readCommit({ ...base, oid: parent })
-    if (commit.tree === tree) return false
-    await git.commit({ ...base, ref: `refs/heads/${ref}`, tree, parent: [parent], message, author: AUTHOR })
+    const root: TreeEntry[] = []
+    for (const [path, entries] of sections) {
+      if (!entries.length) continue
+      root.push({ mode: '040000', path, oid: await git.writeTree({ ...base, tree: entries }), type: 'tree' })
+    }
+    const tree = await git.writeTree({ ...base, tree: root })
+    const parent = await head(ref)
+    if ((await git.readCommit({ ...base, oid: parent })).commit.tree === tree) return false
+    await git.commit({ ...base, ref: `refs/heads/${ref}`, tree, parent: [parent], message, author: author(by) })
     return true
   }
 
-  /** page id -> blob oid of a section on a branch */
-  async function sectionBlobs(ref: string, sectionId: string): Promise<Map<string, string>> {
-    const entries = (await sectionsOf(ref)).get(sectionId) ?? []
-    return new Map(entries.map((e) => [pageIdOf(`${sectionId}/${e.path}`), e.oid]))
-  }
-
-  async function readAt(ref: string, path: string): Promise<string | null> {
-    try {
-      const oid = await git.resolveRef({ ...base, ref })
-      const { blob } = await git.readBlob({ ...base, oid, filepath: path })
-      return decoder.decode(blob)
-    } catch (e) {
-      if (e instanceof Errors.NotFoundError) return null
-      throw e
+  /** main's first-parent line, newest first: local commits and the merges of each sync (S9) */
+  async function log(): Promise<LogEntry[]> {
+    const entries: LogEntry[] = []
+    let oid: string | undefined = await head(MAIN)
+    while (oid) {
+      const { commit } = await git.readCommit({ ...base, oid })
+      entries.push({
+        oid,
+        parents: commit.parent,
+        message: commit.message.trim(),
+        author: commit.author.name,
+        date: new Date(commit.committer.timestamp * 1000),
+      })
+      oid = commit.parent[0]
     }
+    return entries
   }
 
-  /** Page ids whose main version differs from what OneNote has */
-  async function unsynced(sectionId: string): Promise<string[]> {
-    const [ours, theirs] = await Promise.all([sectionBlobs(MAIN, sectionId), sectionBlobs(ONENOTE, sectionId)])
-    const ids = new Set([...ours.keys(), ...theirs.keys()])
-    return [...ids].filter((id) => ours.get(id) !== theirs.get(id))
+  // --- merging ---
+
+  /** Commits the whole worktree (like `git add -A`) as a merge of main and `theirs` */
+  async function commitMerge(theirs: string, message: string, by: string) {
+    for (const [filepath, inHead, workdir, staged] of await git.statusMatrix({ ...base })) {
+      if (inHead === 1 && workdir === 1 && staged === 1) continue
+      await stage(filepath)
+    }
+    await git.commit({
+      ...base,
+      ref: `refs/heads/${MAIN}`,
+      message,
+      parent: [await head(MAIN), theirs],
+      author: author(by),
+    })
   }
 
   /**
-   * Merges onenote into main. Clean merges update main and the worktree;
-   * conflicts leave markers in the worktree and are returned as a pending merge.
+   * Merges a remote branch into main, never fast-forward (S4.2). Clean merges update main and the
+   * worktree; conflicts leave markers in the worktree and are returned as a pending merge.
    */
-  async function mergeOneNote(): Promise<PendingMerge | null> {
+  async function merge(remote: string): Promise<PendingMerge | null> {
     try {
       await git.merge({
         ...base,
         ours: MAIN,
-        theirs: ONENOTE,
+        theirs: remote,
+        fastForward: false,
         abortOnConflict: false,
-        message: 'Merge OneNote changes',
-        author: AUTHOR,
+        message: `Merge ${remote}`,
+        author: author(remote),
       })
     } catch (e) {
       if (!(e instanceof Errors.MergeConflictError)) throw e
-      const pending = {
-        theirs: await git.resolveRef({ ...base, ref: ONENOTE }),
-        conflicts: e.data.filepaths,
-      }
+      const pending = { theirs: await head(remote), conflicts: e.data.filepaths }
       await fs.promises.writeFile(mergeFile, JSON.stringify(pending), 'utf8')
       return pending
     }
@@ -214,58 +264,27 @@ export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) 
     }
   }
 
-  /** Commits the whole resolved worktree (like `git add -A`) as a merge of main and onenote */
-  async function completeMerge(pending: PendingMerge) {
-    for (const [filepath, head, workdir, stage] of await git.statusMatrix({ ...base })) {
-      if (head === 1 && workdir === 1 && stage === 1) continue
-      if (workdir === 0) await git.remove({ ...base, filepath })
-      else await git.add({ ...base, filepath })
-    }
-    await git.commit({
-      ...base,
-      ref: `refs/heads/${MAIN}`,
-      message: 'Merge OneNote changes',
-      parent: [await git.resolveRef({ ...base, ref: MAIN }), pending.theirs],
-      author: AUTHOR,
-    })
+  /** Commits the resolved worktree as the merge */
+  async function completeMerge(pending: PendingMerge, remote: string) {
+    await commitMerge(pending.theirs, `Merge ${remote} (conflicts resolved)`, LOCAL_AUTHOR)
     await fs.promises.unlink(mergeFile)
-  }
-
-  /** Commits that changed a page on main, newest first */
-  async function history(path: string) {
-    const commits = await git.log({ ...base, ref: MAIN, filepath: path, force: true })
-    return commits.map(({ oid, commit }) => ({
-      oid,
-      message: commit.message.trim(),
-      date: new Date(commit.committer.timestamp * 1000),
-    }))
-  }
-
-  async function readAtCommit(oid: string, path: string): Promise<string | null> {
-    try {
-      const { blob } = await git.readBlob({ ...base, oid, filepath: path })
-      return decoder.decode(blob)
-    } catch (e) {
-      if (e instanceof Errors.NotFoundError) return null
-      throw e
-    }
   }
 
   return {
     init,
-    readPage,
-    writePage,
-    deletePage,
-    commitWorktree,
+    readFile,
+    writeFile,
+    commitFiles,
     commitToBranch,
-    sectionBlobs,
+    files,
+    blobAt,
     readAt,
-    unsynced,
-    mergeOneNote,
+    readAtCommit,
+    sameAt,
+    log,
+    merge,
     pendingMerge,
     completeMerge,
-    history,
-    readAtCommit,
   }
 }
 

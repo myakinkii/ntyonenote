@@ -43,6 +43,9 @@ async function challengeFor(verifier: string): Promise<string> {
 
 // --- token endpoint ---
 
+/** The token endpoint answered with an error: the refresh token is expired or revoked */
+export class TokenRejectedError extends Error {}
+
 interface TokenResponse {
   access_token: string
   refresh_token?: string
@@ -69,7 +72,7 @@ async function tokenRequest(params: Record<string, string>): Promise<string> {
   }
 
   if (json.error || !json.access_token) {
-    throw new Error(json.error_description || json.error || 'Token request failed')
+    throw new TokenRejectedError(json.error_description || json.error || 'Token request failed')
   }
 
   accessToken = json.access_token
@@ -153,7 +156,10 @@ export async function handleRedirect(): Promise<void> {
   await redeemCode(here.toString())
 }
 
-/** Cached access token, refreshed when close to expiry. null means the user has to sign in. */
+/**
+ * Cached access token, refreshed when close to expiry. null means the user has to sign in.
+ * Throws when the token endpoint can't be reached, being offline is not being signed out.
+ */
 export async function getAccessToken(): Promise<string | null> {
   if (accessToken && Date.now() < expiresAt - 60_000) return accessToken
   refreshing ??= (async () => {
@@ -161,7 +167,8 @@ export async function getAccessToken(): Promise<string | null> {
     if (!value) return null
     try {
       return await tokenRequest({ grant_type: 'refresh_token', refresh_token: value })
-    } catch {
+    } catch (e) {
+      if (!(e instanceof TokenRejectedError)) throw e
       await signOut() // refresh token expired or revoked
       return null
     }

@@ -1,30 +1,54 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { GraphError, type Notebook, type PageSummary, type Section } from '@/graph/client'
-import { MAIN, ONENOTE, pagePath, type PendingMerge } from '@/sync/repo'
-import { meta, notebooksCache, repo } from '@/sync/storage'
-import { createSync } from '@/sync/sync'
+import { createOneNoteConnector } from '@/connectors/onenote'
+import { GraphError } from '@/graph/client'
+import type { Notebook, Section } from '@/sync/connector'
+import {
+  emptyLedger,
+  LEDGER_PATH,
+  newLocalId,
+  pagePath,
+  parsePagePath,
+  serializeLedger,
+  type Ledger,
+} from '@/sync/ledger'
+import { MAIN, type FileChange, type PendingMerge } from '@/sync/repo'
+import { notebooksCache, repo } from '@/sync/storage'
+import { createSync, type HistoryEntry } from '@/sync/sync'
 import { useAuthStore } from './auth'
 import { useDialogStore } from './dialog'
 
 export type EditorTab = 'edit' | 'preview' | 'history' | 'conflicts'
 
+export interface NotePage {
+  id: string
+  title: string
+  /** content is local; otherwise it's downloaded on open (docs/sync-design.md S6) */
+  downloaded: boolean
+  /** remote lastModified as of the last sync, absent for pages created offline */
+  modified?: string
+}
+
+// Local first (S1.1): everything reads and writes the local repo, only sync and lazy downloads go online.
 export const useNotesStore = defineStore('notes', () => {
   const auth = useAuthStore()
   const dialog = useDialogStore()
-  const engine = createSync(repo, auth.graph, meta)
+  const connector = createOneNoteConnector(auth.graph)
+  const engine = createSync(repo, connector)
 
   const notebooks = ref<Notebook[]>([])
+  const ledger = ref<Ledger>(emptyLedger(connector.id))
   const section = ref<Section | null>(null)
-  const pages = ref<PageSummary[]>([])
-  const page = ref<PageSummary | null>(null)
+  const page = ref<NotePage | null>(null)
   const tab = ref<EditorTab>('edit')
 
   const markdown = ref('')
   const savedMarkdown = ref('')
 
-  /** page ids in the current section whose local version isn't in OneNote yet */
+  /** paths of downloaded pages on main */
+  const downloaded = ref(new Set<string>())
+  /** page ids in the current section with changes not pushed yet (S3.4) */
   const unsynced = ref<string[]>([])
   const merge = ref<PendingMerge | null>(null)
 
@@ -32,9 +56,34 @@ export const useNotesStore = defineStore('notes', () => {
   const status = ref('Ready')
 
   const dirty = computed(() => page.value !== null && markdown.value !== savedMarkdown.value)
-  const conflicted = computed(
-    () => new Set(merge.value?.conflicts.map((path) => path.slice(path.indexOf('/') + 1, -3)) ?? []),
-  )
+  const conflicted = computed(() => new Set(merge.value?.conflicts.map((path) => parsePagePath(path).pageId) ?? []))
+  const lastSync = computed(() => ledger.value.lastSync ?? null)
+  const isSyncable = (s: Section) => connector.isSyncable(s)
+  const sectionDeleted = computed(() => !!section.value && !!ledger.value.sections[section.value.id]?.deleted)
+
+  /** the notebook tree plus sections deleted remotely but still kept locally (S7) */
+  const tree = computed<Notebook[]>(() => {
+    const deleted = Object.entries(ledger.value.sections)
+      .filter(([, s]) => s.deleted)
+      .map(([id, s]) => ({ id, displayName: s.name }))
+    const listed = notebooks.value.map((n) => ({ ...n, sections: n.sections.filter((s) => !ledger.value.sections[s.id]?.deleted) }))
+    return deleted.length ? [...listed, { id: 'deleted', displayName: 'Deleted in OneNote', sections: deleted }] : listed
+  })
+
+  /** pages of the current section, the ones created offline first, then newest */
+  const pages = computed<NotePage[]>(() => {
+    const current = section.value
+    if (!current) return []
+    return Object.entries(ledger.value.pages)
+      .filter(([, p]) => p.section === current.id && !p.deleted)
+      .map(([id, p]) => ({
+        id,
+        title: p.title,
+        downloaded: downloaded.value.has(pagePath(current.id, id)),
+        modified: p.modified,
+      }))
+      .sort((a, b) => (b.modified ?? '￿').localeCompare(a.modified ?? '￿'))
+  })
 
   async function run<T>(message: string, task: () => Promise<T>): Promise<T | undefined> {
     busy.value++
@@ -54,28 +103,52 @@ export const useNotesStore = defineStore('notes', () => {
 
   const currentPath = () => (section.value && page.value ? pagePath(section.value.id, page.value.id) : null)
 
-  async function refreshSyncState() {
+  async function refresh() {
+    ledger.value = await engine.readLedger()
     merge.value = await repo.pendingMerge()
-    unsynced.value = section.value ? await repo.unsynced(section.value.id) : []
+    downloaded.value = new Set((await repo.files(MAIN)))
+    const current = section.value
+    if (!current) {
+      unsynced.value = []
+      return
+    }
+    const changed: string[] = []
+    for (const [id, p] of Object.entries(ledger.value.pages)) {
+      if (p.section !== current.id) continue
+      const path = pagePath(current.id, id)
+      const contentChanged = downloaded.value.has(path) && !(await repo.sameAt(MAIN, connector.id, path))
+      if (!p.remote || p.deleted || p.title !== p.remoteTitle || contentChanged) changed.push(id)
+    }
+    unsynced.value = changed
   }
 
   /** Re-reads the open page from disk unless the user has unsaved edits */
   async function reloadPage() {
     const path = currentPath()
     if (!path || dirty.value) return
-    markdown.value = savedMarkdown.value = (await repo.readPage(path)) ?? ''
+    markdown.value = savedMarkdown.value = (await repo.readFile(path)) ?? ''
   }
 
-  /** New/Delete fetch from OneNote, which has to wait until the merge is finished */
+  /** Commits a ledger change, optionally with page files, on main */
+  async function commitLedger(change: (l: Ledger) => void, message: string, files: FileChange[] = []) {
+    const next = await engine.readLedger()
+    change(next)
+    await repo.commitFiles([...files, { path: LEDGER_PATH, content: serializeLedger(next) }], message)
+  }
+
+  async function init() {
+    await repo.init(connector.id)
+    await engine.migrate()
+    notebooks.value = (await notebooksCache.load()) ?? []
+    await refresh()
+    status.value = notebooks.value.length ? 'Ready' : 'No notes yet, press Sync to connect'
+  }
+
+  /** New/Delete/Rename commit, which has to wait until the merge is finished (S5.5) */
   async function blockedByMerge(): Promise<boolean> {
     if (!merge.value) return false
     await dialog.error('Conflicts', 'Finish resolving conflicts first.')
     return true
-  }
-
-  async function init() {
-    await repo.init()
-    await refreshSyncState()
   }
 
   /** Ask to save unsaved changes; false means the user cancelled */
@@ -96,55 +169,49 @@ export const useNotesStore = defineStore('notes', () => {
     return true
   }
 
-  /** Notebooks from Graph, or the last known list when offline */
-  async function loadNotebooks() {
-    busy.value++
-    status.value = 'Loading notebooks...'
-    try {
-      notebooks.value = await auth.graph.notebooks()
-      await notebooksCache.save(notebooks.value)
-      status.value = 'Ready'
-    } catch (e) {
-      if (e instanceof GraphError && e.status === 401) auth.tokenRejected()
-      const cached = await notebooksCache.load()
-      if (cached) notebooks.value = cached
-      status.value = cached ? 'Offline: showing local notes' : 'Offline'
-    } finally {
-      busy.value--
-    }
-  }
-
   /** Resolves true when `next` ends up selected (already selected counts too) */
   async function selectSection(next: Section): Promise<boolean> {
     if (section.value?.id === next.id) return true
     if (!(await confirmLeave())) return false
     section.value = next
     closePage()
-    const known = await meta.load(next.id)
-    pages.value = known?.pages ?? []
-    await refreshSyncState()
-    // never synced: fetch it once so there is something to show
-    if (!known) await sync()
+    await refresh()
     return true
   }
 
-  /** fetch + 3-way merge + upload for the current section */
+  /** S4: signs in if needed, then fetch + merge + push for every _md section */
   async function sync() {
-    const current = section.value
-    if (!current || !(await confirmLeave('Save them before syncing?'))) return
-    const result = await run(`Syncing ${current.displayName}...`, () => engine.sync(current))
+    if (!(await confirmLeave('Save them before syncing?'))) return
+    const result = await run('Syncing...', async () => {
+      if (!auth.userName) await auth.loadUser()
+      return engine.sync()
+    })
     if (!result) return
-    pages.value = result.pages
-    await refreshSyncState()
+    notebooks.value = result.notebooks
+    await notebooksCache.save(result.notebooks)
+
+    // pages created offline got their remote ids
+    const renamed = page.value && result.created.get(page.value.id)
+    if (page.value && renamed) page.value = { ...page.value, id: renamed }
+    await refresh()
+
     if (result.conflict) {
       status.value = `Conflicts in ${result.conflict.conflicts.length} page(s)`
-      const first = result.pages.find((p) => conflicted.value.has(p.id))
-      if (first) await openPage(first)
-      tab.value = 'conflicts'
+      await openConflict(result.conflict.conflicts[0]!)
     } else {
-      status.value = `Synced: ${result.pulled} fetched, ${result.pushed} uploaded`
+      const titles = result.titleConflicts.length ? `, OneNote's title kept for ${result.titleConflicts.join(', ')}` : ''
+      status.value = `Synced: ${result.fetched} fetched, ${result.pushed} pushed${titles}`
     }
     await reloadPage()
+  }
+
+  async function openConflict(path: string) {
+    const { sectionId, pageId } = parsePagePath(path)
+    const target = tree.value.flatMap((n) => n.sections).find((s) => s.id === sectionId)
+    if (target) await selectSection(target)
+    const conflictedPage = pages.value.find((p) => p.id === pageId)
+    if (conflictedPage) await openPage(conflictedPage)
+    tab.value = 'conflicts'
   }
 
   function closePage() {
@@ -152,68 +219,83 @@ export const useNotesStore = defineStore('notes', () => {
     markdown.value = savedMarkdown.value = ''
   }
 
-  /** Resolves true when `next` ends up open (already open counts too) */
-  async function openPage(next: PageSummary): Promise<boolean> {
+  /** Resolves true when `next` ends up open; pages not downloaded yet are fetched first (S6) */
+  async function openPage(next: NotePage): Promise<boolean> {
     if (page.value?.id === next.id) return true
     if (!(await confirmLeave())) return false
+    if (!next.downloaded) {
+      if (await blockedByMerge()) return false
+      const ok = await run(`Downloading ${next.title || 'Untitled'}...`, async () => {
+        await engine.fetchPage(next.id)
+        return true
+      })
+      await refresh()
+      if (!ok) return false
+    }
     closePage()
-    page.value = next
+    page.value = { ...next, downloaded: true }
     if (tab.value === 'history' || (tab.value === 'conflicts' && !merge.value)) tab.value = 'edit'
     await reloadPage()
     return true
   }
 
-  /** Saves locally: a commit on main, or just the file while a merge is being resolved */
+  /** S5.1: a commit on main, or just the file while a merge is being resolved */
   async function save(): Promise<boolean> {
     const path = currentPath()
     if (!path) return false
     const text = markdown.value
     const ok = await run('Saving...', async () => {
-      await repo.writePage(path, text)
-      if (!merge.value) await repo.commitWorktree([path], `Save ${page.value?.title || 'Untitled'}`)
+      if (merge.value) await repo.writeFile(path, text)
+      else await repo.commitFiles([{ path, content: text }], `Save ${page.value?.title || 'Untitled'}`)
       return true
     })
     if (!ok) return false
     savedMarkdown.value = text
-    await refreshSyncState()
+    await refresh()
     status.value = merge.value ? 'Saved, finish the merge to commit' : 'Saved locally'
     return true
   }
 
+  /** S5.2 */
   async function createPage(title: string) {
     const current = section.value
     if (!current || (await blockedByMerge()) || !(await confirmLeave())) return
-    const created = await run('Creating page...', async () => {
-      const page = await auth.graph.createPage(current, title, `# ${title}\n\n`)
-      const pulled = await engine.pull(current)
-      pages.value = pulled.pages
-      return page
+    const id = newLocalId()
+    const ok = await run('Creating page...', async () => {
+      await commitLedger((l) => (l.pages[id] = { section: current.id, title, remote: false }), `Create ${title}`, [
+        { path: pagePath(current.id, id), content: '' },
+      ])
+      return true
     })
-    if (!created) return
-    await refreshSyncState()
-    const listed = pages.value.find((p) => p.id === created.id)
-    if (listed) await openPage(listed)
+    if (!ok) return
+    await refresh()
+    const created = pages.value.find((p) => p.id === id)
+    if (created) await openPage(created)
   }
 
-  async function renamePage(title: string) {
+  /** S5.3; resolves false when the rename didn't happen */
+  async function renamePage(title: string): Promise<boolean> {
     const current = page.value
-    const currentSection = section.value
-    if (!current || !currentSection || title === current.title) return
-    await run('Renaming...', async () => {
-      await auth.graph.renamePage(current, title)
-      current.title = title
-      await meta.save(currentSection.id, { pages: pages.value })
+    if (!current || title === current.title) return true
+    if (await blockedByMerge()) return false
+    const ok = await run('Renaming...', async () => {
+      await commitLedger((l) => (l.pages[current.id]!.title = title), `Rename ${title}`)
+      return true
     })
+    if (!ok) return false
+    page.value = { ...current, title }
+    await refresh()
+    return true
   }
 
+  /** S5.4 */
   async function deletePage() {
     const current = page.value
     const currentSection = section.value
     if (!current || !currentSection || (await blockedByMerge())) return
-    const unsaved = unsynced.value.includes(current.id) ? '\n\nIts changes that are not synced yet will be lost.' : ''
     const answer = await dialog.ask(
       'Confirm Page Delete',
-      `Are you sure you want to delete "${current.title || 'Untitled'}"?${unsaved}`,
+      `Are you sure you want to delete "${current.title || 'Untitled'}"?\n\nIt is deleted in OneNote on the next sync.`,
       [
         { label: 'Yes', value: 'yes' },
         { label: 'No', value: 'no' },
@@ -221,25 +303,47 @@ export const useNotesStore = defineStore('notes', () => {
       'warning',
     )
     if (answer !== 'yes') return
-    await run('Deleting...', async () => {
-      await auth.graph.deletePage(current)
-      const path = pagePath(currentSection.id, current.id)
-      await repo.deletePage(path)
-      await repo.commitWorktree([path], `Delete ${current.title || 'Untitled'}`)
-      pages.value = (await engine.pull(currentSection)).pages
-      closePage()
-    })
-    await refreshSyncState()
+    await run('Deleting...', () =>
+      commitLedger(
+        (l) => {
+          if (l.pages[current.id]?.remote) l.pages[current.id]!.deleted = true
+          else delete l.pages[current.id]
+        },
+        `Delete ${current.title || 'Untitled'}`,
+        [{ path: pagePath(currentSection.id, current.id), content: null }],
+      ),
+    )
+    closePage()
+    await refresh()
   }
 
-  // --- conflicts ---
+  /** S7: drops the local copy of a section deleted in OneNote */
+  async function removeSection() {
+    const current = section.value
+    if (!current || !sectionDeleted.value || (await blockedByMerge())) return
+    const answer = await dialog.ask(
+      'Remove Section',
+      `"${current.displayName}" was deleted in OneNote.\n\nRemove its pages from this device too?`,
+      [
+        { label: 'Yes', value: 'yes' },
+        { label: 'No', value: 'no' },
+      ],
+      'warning',
+    )
+    if (answer !== 'yes') return
+    await run('Removing...', () => engine.removeSection(current.id))
+    closePage()
+    section.value = null
+    await refresh()
+  }
 
-  async function resolveWith(side: 'mine' | 'onenote') {
+  // --- conflicts (S8) ---
+
+  async function resolveWith(side: 'mine' | 'remote') {
     const path = currentPath()
     if (!path) return
-    const content = await repo.readAt(side === 'mine' ? MAIN : ONENOTE, path)
-    if (content === null) await repo.deletePage(path)
-    else await repo.writePage(path, content)
+    const content = await repo.readAt(side === 'mine' ? MAIN : connector.id, path)
+    await repo.writeFile(path, content)
     markdown.value = savedMarkdown.value = content ?? ''
     tab.value = 'edit'
   }
@@ -247,52 +351,55 @@ export const useNotesStore = defineStore('notes', () => {
   async function completeMerge() {
     const pending = merge.value
     if (!pending) return
+    if (!(await confirmLeave('Save them before finishing the merge?'))) return
     for (const path of pending.conflicts) {
-      if ((await repo.readPage(path))?.includes('<<<<<<<')) {
+      if ((await repo.readFile(path))?.includes('<<<<<<<')) {
         await dialog.error('Conflicts', 'Some pages still contain conflict markers (<<<<<<<).')
         return
       }
     }
-    if (!(await confirmLeave('Save them before finishing the merge?'))) return
-    await run('Finishing merge...', () => repo.completeMerge(pending))
-    await refreshSyncState()
-    status.value = 'Merge finished, press Sync to upload'
+    await run('Finishing merge...', () => engine.completeMerge(pending))
+    await refresh()
+    status.value = 'Merge finished, press Sync to push'
     if (tab.value === 'conflicts') tab.value = 'edit'
+    if (page.value && !downloaded.value.has(currentPath() ?? '')) closePage()
+    else await reloadPage()
   }
 
-  // --- history ---
+  // --- history (S9) ---
 
-  async function history() {
-    const path = currentPath()
-    return path ? repo.history(path) : []
+  async function history(): Promise<HistoryEntry[]> {
+    return page.value ? engine.history(page.value.id) : []
   }
 
-  async function versionAt(oid: string): Promise<string> {
-    const path = currentPath()
-    return (path && (await repo.readAtCommit(oid, path))) ?? ''
+  async function versionAt(entry: HistoryEntry): Promise<string> {
+    return (await repo.readAtCommit(entry.oid, entry.path)) ?? ''
   }
 
   /** Puts an old version into the editor as an unsaved change */
-  async function restore(oid: string) {
-    markdown.value = await versionAt(oid)
+  async function restore(entry: HistoryEntry) {
+    markdown.value = await versionAt(entry)
     tab.value = 'edit'
   }
 
   return {
     notebooks,
+    tree,
     section,
+    sectionDeleted,
     pages,
     page,
     tab,
     markdown,
     unsynced,
     merge,
+    lastSync,
     conflicted,
     busy,
     status,
     dirty,
+    isSyncable,
     init,
-    loadNotebooks,
     selectSection,
     sync,
     openPage,
@@ -300,6 +407,7 @@ export const useNotesStore = defineStore('notes', () => {
     createPage,
     renamePage,
     deletePage,
+    removeSection,
     confirmLeave,
     resolveWith,
     completeMerge,

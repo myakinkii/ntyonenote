@@ -1,20 +1,28 @@
 <script setup lang="ts">
-import type { PageSummary } from '@/graph/client'
-import { useNotesStore } from '@/stores/notes'
+import { useNotesStore, type NotePage } from '@/stores/notes'
 
 const emit = defineEmits<{ picked: [] }>()
 
 const notes = useNotesStore()
 
-async function pick(page: PageSummary) {
+async function pick(page: NotePage) {
   if (await notes.openPage(page)) emit('picked')
 }
 
-const formatDate = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+/** remote versions are dates for OneNote; pages created offline have none yet */
+function formatVersion(version?: string) {
+  const date = version ? new Date(version) : null
+  if (!date || isNaN(date.getTime())) return version ? '' : 'new'
+  return date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+}
 </script>
 
 <template>
+  <div class="page-list-wrap">
+  <div v-if="notes.sectionDeleted" class="deleted-banner">
+    <span>⚠️ Deleted in OneNote</span>
+    <button @click="notes.removeSection()">Remove local copy</button>
+  </div>
   <div class="sunken-panel page-list">
     <table class="interactive">
       <thead>
@@ -37,19 +45,36 @@ const formatDate = (iso: string) =>
           @click="pick(page)"
         >
           <td>
-            {{ notes.conflicted.has(page.id) ? '⚠️' : '📝' }} {{ page.title || 'Untitled' }}
+            {{ notes.conflicted.has(page.id) ? '⚠️' : page.downloaded ? '📝' : '☁️' }}
+            {{ page.title || 'Untitled' }}
             <span v-if="notes.unsynced.includes(page.id)" title="Not synced yet">↑</span>
           </td>
-          <td class="modified">{{ formatDate(page.lastModifiedDateTime) }}</td>
+          <td class="modified">{{ formatVersion(page.modified) }}</td>
         </tr>
       </tbody>
     </table>
   </div>
+  </div>
 </template>
 
 <style scoped>
-.page-list {
+.page-list-wrap {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deleted-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.page-list {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 

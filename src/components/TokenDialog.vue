@@ -29,6 +29,9 @@ function submit() {
     <div class="window token-dialog" role="dialog" aria-label="Connect to OneNote">
       <div class="title-bar">
         <div class="title-bar-text">Connect to OneNote</div>
+        <div class="title-bar-controls">
+          <button aria-label="Close" @click="auth.dismiss()" />
+        </div>
       </div>
       <div class="window-body">
         <template v-if="auth.canSignIn">
@@ -57,6 +60,10 @@ function submit() {
             </section>
           </form>
         </details>
+
+        <section class="buttons offline">
+          <button @click="auth.dismiss()">Work offline</button>
+        </section>
       </div>
     </div>
   </div>
@@ -91,6 +98,10 @@ details {
 textarea {
   font-family: monospace;
   word-break: break-all;
+}
+
+.offline {
+  margin-top: 12px;
 }
 
 .buttons {
