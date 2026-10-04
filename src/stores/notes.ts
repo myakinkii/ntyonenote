@@ -1,7 +1,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { createOneNoteConnector } from '@/connectors/onenote'
+import { createOneNoteConnector, createOneNoteSource } from '@/connectors/onenote'
+import { convertedMarkdown, convertPage } from '@/convert/converter'
 import { GraphError } from '@/graph/client'
 import type { Notebook, Section } from '@/sync/connector'
 import {
@@ -15,6 +16,7 @@ import {
 } from '@/sync/ledger'
 import { MAIN, type FileChange, type PendingMerge } from '@/sync/repo'
 import { notebooksCache, repo } from '@/sync/storage'
+import { createConvert, mirrorName, type ConvertResult } from '@/sync/convert'
 import { createSync, type HistoryEntry } from '@/sync/sync'
 import { useAuthStore } from './auth'
 import { useDialogStore } from './dialog'
@@ -36,6 +38,10 @@ export const useNotesStore = defineStore('notes', () => {
   const dialog = useDialogStore()
   const connector = createOneNoteConnector(auth.graph)
   const engine = createSync(repo, connector)
+  const converter = createConvert(repo, connector, createOneNoteSource(auth.graph), (html) => {
+    const conversion = convertPage(html)
+    return { markdown: convertedMarkdown(conversion), warnings: conversion.warnings.length }
+  })
 
   const notebooks = ref<Notebook[]>([])
   const ledger = ref<Ledger>(emptyLedger(connector.id))
@@ -51,6 +57,11 @@ export const useNotesStore = defineStore('notes', () => {
   /** page ids in the current section with changes not pushed yet (S3.4) */
   const unsynced = ref<string[]>([])
   const merge = ref<PendingMerge | null>(null)
+
+  /** set while a section is being converted, aborting it stops after the current page */
+  const converting = ref<AbortController | null>(null)
+  /** pages done of all pages while converting, for the progress bar */
+  const progress = ref<{ done: number; total: number } | null>(null)
 
   const busy = ref(0)
   const status = ref('Ready')
@@ -205,6 +216,104 @@ export const useNotesStore = defineStore('notes', () => {
     await reloadPage()
   }
 
+  // --- converting regular sections (docs/convert-design.md) ---
+
+  function convertSummary(result: ConvertResult, again: boolean): string {
+    const list = (titles: string[]) =>
+      titles
+        .slice(0, 10)
+        .map((t) => `  • ${t || 'Untitled'}`)
+        .join('\n') + (titles.length > 10 ? `\n  • and ${titles.length - 10} more` : '')
+    const lines = [`${result.created} page(s) converted into "${result.mirror.displayName}".`]
+    if (again) lines.push(`${result.updated} updated, ${result.unchanged} unchanged.`)
+    if (result.withWarnings) lines.push(`${result.withWarnings} with warnings: see the comment at the top of those pages.`)
+    if (result.failed.length) {
+      lines.push(`${result.failed.length} failed, convert again to retry:\n${list(result.failed.map((f) => `${f.title} (${f.reason})`))}`)
+    }
+    if (result.skipped.length) lines.push(`${result.skipped.length} deleted here, not recreated:\n${list(result.skipped)}`)
+    if (result.gone.length) lines.push(`${result.gone.length} gone from the original, kept here:\n${list(result.gone)}`)
+    if (result.cancelled) lines.push('Stopped. Convert again to continue where it stopped.')
+    return lines.join('\n\n')
+  }
+
+  /** C5/C6: converts a regular section into its _md mirror, or adds to the mirror made before */
+  async function convertSection(source: Section) {
+    if (busy.value || (await blockedByMerge()) || !(await confirmLeave())) return
+    const notebook = notebooks.value.find((n) => n.sections.some((s) => s.id === source.id))
+    if (!notebook) return
+    const mirror = await converter.mirrorOf(source.id)
+    const name = mirror?.displayName ?? mirrorName(source.displayName, notebook.sections.map((s) => s.displayName))
+
+    const answer = mirror
+      ? await dialog.ask(
+          'Convert Section',
+          `"${source.displayName}" was converted into "${name}" on this device.\n\n` +
+            'Add the pages that are missing there, or convert every page again? ' +
+            `Converting again merges changes made in "${source.displayName}" into your edits.`,
+          [
+            { label: 'Add missing', value: 'missing' },
+            { label: 'Convert again', value: 'again' },
+            { label: 'Cancel', value: 'cancel' },
+          ],
+        )
+      : await dialog.ask(
+          'Convert Section',
+          `Convert "${source.displayName}" into a new section "${name}"?\n\n` +
+            `Every page is converted to markdown and created there. "${source.displayName}" itself stays untouched. ` +
+            'Big sections take a while, you can stop and continue later.',
+          [
+            { label: 'Convert', value: 'missing' },
+            { label: 'Cancel', value: 'cancel' },
+          ],
+        )
+    if (answer === 'cancel') return
+
+    const controller = new AbortController()
+    converting.value = controller
+    const again = answer === 'again'
+    const target = {
+      notebookId: notebook.id,
+      notebookName: notebook.displayName,
+      section: source,
+      takenNames: notebook.sections.map((s) => s.displayName),
+    }
+    const result = await run('Converting...', async () => {
+      if (!auth.userName) await auth.loadUser()
+      return converter.convertSection(target, {
+        again,
+        signal: controller.signal,
+        onProgress: (done, total, title) => {
+          progress.value = { done, total }
+          status.value = `Converting ${done} of ${total}: ${title || 'Untitled'}`
+        },
+      })
+    })
+    converting.value = null
+    progress.value = null
+    await refresh()
+    if (!result) return
+
+    // the mirror shows up right away, the next sync lists it from OneNote anyway
+    if (!notebook.sections.some((s) => s.id === result.mirror.id)) {
+      notebooks.value = notebooks.value.map((n) => (n.id === notebook.id ? { ...n, sections: [...n.sections, result.mirror] } : n))
+      await notebooksCache.save(notebooks.value)
+    }
+
+    if (result.conflict) {
+      status.value = `Conflicts in ${result.conflict.conflicts.length} page(s)`
+      await openConflict(result.conflict.conflicts[0]!)
+      return
+    }
+    await selectSection(result.mirror)
+    status.value = `Converted: ${result.created} new, ${result.updated} updated, ${result.failed.length} failed`
+    const icon = result.failed.length ? 'warning' : 'info'
+    await dialog.ask('Convert Section', convertSummary(result, again), [{ label: 'OK', value: 'ok' }], icon)
+  }
+
+  function stopConverting() {
+    converting.value?.abort()
+  }
+
   async function openConflict(path: string) {
     const { sectionId, pageId } = parsePagePath(path)
     const target = tree.value.flatMap((n) => n.sections).find((s) => s.id === sectionId)
@@ -342,7 +451,8 @@ export const useNotesStore = defineStore('notes', () => {
   async function resolveWith(side: 'mine' | 'remote') {
     const path = currentPath()
     if (!path) return
-    const content = await repo.readAt(side === 'mine' ? MAIN : connector.id, path)
+    // the other side is whatever is being merged: OneNote, or a conversion (C4.3)
+    const content = await repo.readAt(side === 'mine' ? MAIN : (merge.value?.branch ?? connector.id), path)
     await repo.writeFile(path, content)
     markdown.value = savedMarkdown.value = content ?? ''
     tab.value = 'edit'
@@ -397,6 +507,8 @@ export const useNotesStore = defineStore('notes', () => {
     conflicted,
     busy,
     status,
+    converting,
+    progress,
     dirty,
     isSyncable,
     init,
@@ -408,6 +520,8 @@ export const useNotesStore = defineStore('notes', () => {
     renamePage,
     deletePage,
     removeSection,
+    convertSection,
+    stopConverting,
     confirmLeave,
     resolveWith,
     completeMerge,

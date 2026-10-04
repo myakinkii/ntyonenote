@@ -28,6 +28,8 @@ export class GraphError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** seconds to wait before retrying, from a 429's Retry-After */
+    public retryAfter?: number,
   ) {
     super(message)
   }
@@ -71,7 +73,7 @@ export function createGraphClient(getToken: TokenProvider) {
       } catch {
         // not json, keep status text
       }
-      throw new GraphError(res.status, message)
+      throw new GraphError(res.status, message, Number(res.headers.get('Retry-After')) || undefined)
     }
     return res
   }
@@ -163,6 +165,35 @@ export function createGraphClient(getToken: TokenProvider) {
         contentUrl: page.contentUrl,
         lastModifiedDateTime: page.lastModifiedDateTime,
       }
+    },
+
+    // --- reading regular sections and creating _md mirrors (docs/convert-design.md) ---
+
+    /** All pages of any section with their creation time, following OData paging */
+    async sectionPages(sectionId: string): Promise<{ id: string; title: string; createdDateTime: string }[]> {
+      const pages: { id: string; title: string; createdDateTime: string }[] = []
+      let url: string | undefined = `/me/onenote/sections/${sectionId}/pages?$select=id,title,createdDateTime&$top=100`
+      while (url) {
+        const res: { value: typeof pages; '@odata.nextLink'?: string } = await getJson(url)
+        pages.push(...res.value)
+        url = res['@odata.nextLink']
+      }
+      return pages
+    },
+
+    /** A page's HTML as OneNote stores it, without element ids so unchanged pages read the same */
+    async pageHtml(pageId: string): Promise<string> {
+      return (await request(`/me/onenote/pages/${pageId}/content`)).text()
+    },
+
+    async createSection(notebookId: string, displayName: string): Promise<{ id: string; displayName: string }> {
+      const res = await request(`/me/onenote/notebooks/${notebookId}/sections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName }),
+      })
+      const section = await res.json()
+      return { id: section.id, displayName: section.displayName }
     },
 
     async deletePage(page: PageSummary): Promise<void> {

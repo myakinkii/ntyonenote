@@ -22,7 +22,9 @@ const current = computed(() => !!notes.page && notes.conflicted.has(notes.page.i
       <legend>{{ notes.page?.title || 'Untitled' }}</legend>
       <div class="actions">
         <button @click="notes.resolveWith('mine')">💻 Keep mine</button>
-        <button @click="notes.resolveWith('remote')">☁️ Keep OneNote's</button>
+        <button @click="notes.resolveWith('remote')">
+          {{ notes.merge?.branch === 'import' ? '🔄 Keep converted' : "☁️ Keep OneNote's" }}
+        </button>
         <button @click="notes.tab = 'edit'">✏️ Edit merged text</button>
       </div>
     </fieldset>

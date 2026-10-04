@@ -3,9 +3,20 @@
 export const LEDGER_PATH = 'ledger.json'
 const LOCAL_PREFIX = 'local-'
 
+/** where a converted _md section came from (docs/convert-design.md C3) */
+export interface SectionSource {
+  /** the regular OneNote section it was converted from */
+  id: string
+  name: string
+  /** source page id -> mirror page id, for every page ever converted (C3.1) */
+  pages: Record<string, string>
+}
+
 export interface LedgerSection {
   name: string
   notebook: string
+  /** set on _md mirrors made by converting a regular section */
+  source?: SectionSource
   /** gone from the remote, kept locally until the user removes it (S7) */
   deleted?: true
 }
@@ -22,6 +33,8 @@ export interface LedgerPage {
   modified?: string
   /** remote version of the content on the remote branch */
   fetched?: string
+  /** createdDateTime of the regular page it was converted from (C3.2) */
+  created?: string
   /** id it had before its first upload (S9.2) */
   createdAs?: string
   /** deleted locally, to be deleted remotely on push */

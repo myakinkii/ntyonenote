@@ -9,7 +9,7 @@ const notes = useNotesStore()
 const commits = ref<HistoryEntry[]>([])
 const selected = ref<HistoryEntry | null>(null)
 
-const FROM = { local: '💻 Local', remote: '☁️ OneNote', merge: '🔀 Merge' }
+const FROM = { local: '💻 Local', remote: '☁️ OneNote', merge: '🔀 Merge', convert: '🔄 Convert' }
 const text = ref('')
 
 watch(

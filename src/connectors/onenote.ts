@@ -1,11 +1,13 @@
 import {
   GraphError,
+  OfflineError,
   isMdSection,
   type GraphClient,
   type PageSummary,
   type Section as GraphSection,
 } from '@/graph/client'
 import type { Connector, RemotePage, Section } from '@/sync/connector'
+import type { ConvertSource } from '@/sync/convert'
 
 const BASE_URL = 'https://graph.microsoft.com/v1.0/me/onenote'
 // what the codec turns tabs into, see encodeMarkdown
@@ -99,5 +101,21 @@ export function createOneNoteConnector(graph: GraphClient): Connector {
         if (!(e instanceof GraphError && e.status === 404)) throw e
       }
     },
+  }
+}
+
+/** Reads regular sections and creates _md mirrors (docs/convert-design.md) */
+export function createOneNoteSource(graph: GraphClient): ConvertSource {
+  return {
+    async listPages(sectionId) {
+      return (await graph.sectionPages(sectionId)).map((page) => ({
+        id: page.id,
+        title: splitTitle(page.title).title,
+        created: page.createdDateTime,
+      }))
+    },
+    readHtml: (pageId) => graph.pageHtml(pageId),
+    createSection: (notebookId, name) => graph.createSection(notebookId, name),
+    isFatal: (error) => error instanceof OfflineError || (error instanceof GraphError && error.status === 401),
   }
 }

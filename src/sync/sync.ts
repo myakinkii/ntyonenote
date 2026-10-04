@@ -1,6 +1,6 @@
 import type { Connector, Notebook, RemotePage, Section } from './connector'
 import { LEDGER_PATH, pagePath, parseLedger, parsePagePath, serializeLedger, type Ledger, type LedgerPage } from './ledger'
-import { LOCAL_AUTHOR, MAIN, type FileChange, type PendingMerge, type Repo } from './repo'
+import { IMPORT, LOCAL_AUTHOR, MAIN, type FileChange, type PendingMerge, type Repo } from './repo'
 
 // Sync engine, see docs/sync-design.md (S4-S9).
 
@@ -25,7 +25,7 @@ export interface HistoryEntry {
   path: string
   message: string
   date: Date
-  from: 'local' | 'remote' | 'merge'
+  from: 'local' | 'remote' | 'merge' | 'convert'
 }
 
 export function createSync(repo: Repo, connector: Connector) {
@@ -61,7 +61,9 @@ export function createSync(repo: Repo, connector: Connector) {
     const listedSections = new Set<string>()
     for (const notebook of notebooks) {
       for (const section of notebook.sections.filter((s) => connector.isSyncable(s))) {
-        ledger.sections[section.id] = { name: section.displayName, notebook: notebook.displayName }
+        // keep what else the entry holds (a convert source, C3), only `deleted` goes when it's back
+        const { deleted: _deleted, ...kept } = ledger.sections[section.id] ?? {}
+        ledger.sections[section.id] = { ...kept, name: section.displayName, notebook: notebook.displayName }
         listedSections.add(section.id)
       }
     }
@@ -314,7 +316,7 @@ export function createSync(repo: Repo, connector: Connector) {
           path: pagePath(section, id),
           message: commit.message,
           date: commit.date,
-          from: commit.parents.length > 1 ? 'merge' : commit.author === LOCAL_AUTHOR ? 'local' : 'remote',
+          from: commit.parents.length > 1 ? 'merge' : commit.author === LOCAL_AUTHOR ? 'local' : commit.author === IMPORT ? 'convert' : 'remote',
         })
       }
       if (!before && mdBefore === null && (now || mdNow)) break

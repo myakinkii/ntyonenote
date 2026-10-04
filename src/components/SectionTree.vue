@@ -7,7 +7,8 @@ const emit = defineEmits<{ picked: [] }>()
 const notes = useNotesStore()
 
 async function pick(section: Section) {
-  if (notes.isSyncable(section) && (await notes.selectSection(section))) emit('picked')
+  if (!notes.isSyncable(section)) return notes.convertSection(section)
+  if (await notes.selectSection(section)) emit('picked')
 }
 </script>
 
@@ -27,7 +28,7 @@ async function pick(section: Section) {
               selected: notes.section?.id === section.id,
               foreign: !notes.isSyncable(section),
             }"
-            :title="notes.isSyncable(section) ? section.displayName : 'Not an _md section, read only in OneNote'"
+            :title="notes.isSyncable(section) ? section.displayName : 'Not an _md section, click to convert it into one'"
             @click="pick(section)"
           >
             {{ notes.isSyncable(section) ? '📁' : '🔒' }} {{ section.displayName }}
@@ -58,7 +59,6 @@ li li {
 
 .foreign {
   color: grey;
-  cursor: default;
 }
 
 .empty {

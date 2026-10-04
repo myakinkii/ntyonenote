@@ -6,6 +6,8 @@ import git, { Errors, type FsClient, type TreeEntry } from 'isomorphic-git'
 //   <connector>   - <sectionId>/<pageId>.md as last fetched from / sent to the remote
 
 export const MAIN = 'main'
+/** converter output, the merge base for converting again (docs/convert-design.md C4) */
+export const IMPORT = 'import'
 /** author of commits made by the user, sync commits are authored by the connector */
 export const LOCAL_AUTHOR = 'ntyonenote'
 
@@ -26,6 +28,8 @@ export interface FileChange {
 export interface PendingMerge {
   theirs: string
   conflicts: string[]
+  /** the branch being merged, absent in merges started before it was recorded */
+  branch?: string
 }
 
 export interface LogEntry {
@@ -247,7 +251,7 @@ export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) 
       })
     } catch (e) {
       if (!(e instanceof Errors.MergeConflictError)) throw e
-      const pending = { theirs: await head(remote), conflicts: e.data.filepaths }
+      const pending: PendingMerge = { theirs: await head(remote), conflicts: e.data.filepaths, branch: remote }
       await fs.promises.writeFile(mergeFile, JSON.stringify(pending), 'utf8')
       return pending
     }
@@ -266,7 +270,7 @@ export function createRepo(fs: FsClient & { promises: PromiseFs }, dir: string) 
 
   /** Commits the resolved worktree as the merge */
   async function completeMerge(pending: PendingMerge, remote: string) {
-    await commitMerge(pending.theirs, `Merge ${remote} (conflicts resolved)`, LOCAL_AUTHOR)
+    await commitMerge(pending.theirs, `Merge ${pending.branch ?? remote} (conflicts resolved)`, LOCAL_AUTHOR)
     await fs.promises.unlink(mergeFile)
   }
 

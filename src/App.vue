@@ -139,6 +139,7 @@ onBeforeUnmount(() => {
         <button :disabled="!notes.dirty" @click="notes.save()">💾 Save</button>
         <button :disabled="!notes.page || !!notes.merge" @click="notes.deletePage()">🗑️ Delete</button>
         <button :disabled="!!notes.busy || !!notes.merge" @click="notes.sync()">🔄 Sync</button>
+        <button v-if="notes.converting" @click="notes.stopConverting()">⏹️ Stop</button>
         <span class="pane-toggles">
           <button
             :class="{ pressed: shown.sections }"
@@ -173,7 +174,15 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="status-bar">
-      <p class="status-bar-field">{{ notes.busy ? '⏳ ' : '' }}{{ notes.status }}</p>
+      <p class="status-bar-field">
+        <span v-if="notes.progress" class="progress-indicator segmented status-progress">
+          <span
+            class="progress-indicator-bar"
+            :style="{ width: `${(100 * notes.progress.done) / notes.progress.total}%` }"
+          />
+        </span>
+        {{ notes.busy ? '⏳ ' : '' }}{{ notes.status }}
+      </p>
       <p class="status-bar-field">{{ syncState }}</p>
       <p class="status-bar-field">{{ notes.markdown.length }} chars</p>
       <p class="status-bar-field">👤 {{ auth.userName || 'Not connected' }}</p>
@@ -256,6 +265,21 @@ fieldset.pane > :deep(:not(legend)) {
 
 .status-bar-field:first-child {
   flex: 3;
+}
+
+/* 98.css's segmented progress bar, shrunk to fit the status bar */
+.status-progress {
+  display: inline-block;
+  vertical-align: middle;
+  width: 120px;
+  height: 14px;
+  padding: 2px;
+  margin-right: 4px;
+}
+
+.status-progress > .progress-indicator-bar {
+  background-image: linear-gradient(90deg, navy 0 6px, transparent 6px 8px);
+  background-size: 8px 100%;
 }
 
 /* toggles are for wide screens, phones navigate with Back */
