@@ -44,8 +44,8 @@ onenote   <sectionId>/<pageId>.md     content exactly as last fetched from / sen
       "title": "local title",
       "remote": true,                 // the page exists in OneNote
       "remoteTitle": "...",           // OneNote's title as of the last fetch
-      "modified": "...",              // OneNote lastModifiedDateTime as of the last listing
-      "fetched": "...",               // lastModifiedDateTime of the content on the onenote branch
+      "modified": "...",              // the page's version as of the last listing (S10.4)
+      "fetched": "...",               // version of the content on the onenote branch
       "createdAs": "local-...",       // id it had before its first upload
       "deleted": true                 // deleted here, to be deleted in OneNote on push
     }
@@ -147,3 +147,11 @@ entries from the ledger.
    difference and it may conflict with local edits (we rely on the codec, S4.3.2).
 3. Unsynced local commits can be lost if iOS evicts the app's storage; the last synced state can
    always be fetched again.
+4. OneNote's `lastModifiedDateTime` doesn't move when a page is edited, not even in the OneNote
+   app (https://learn.microsoft.com/en-us/answers/questions/5908957). So every upload, content
+   write and rename stamps the title with a version marker, `#<ISO time># Title`, which the
+   listing exposes. The connector strips it, so titles in the ledger and UI never contain it.
+   Leading the title, it makes `$orderby=title desc` list stamped pages newest first; the
+   connector also sorts by version, since the listing is complete anyway and unstamped pages
+   (falling back to `lastModifiedDateTime`) would otherwise sort by name. Edits made outside
+   ntyonenote don't change the marker and stay unnoticed (they break the magic paragraph anyway).

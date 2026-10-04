@@ -91,11 +91,11 @@ export function createGraphClient(getToken: TokenProvider) {
       return res.value
     },
 
-    /** All pages of a section, newest first, following OData paging */
+    /** All pages of a section, following OData paging; by title, so version-stamped titles come newest first */
     async pages(section: Section): Promise<PageSummary[]> {
       const pages: PageSummary[] = []
       let url: string | undefined =
-        `${section.pagesUrl}?$select=id,title,contentUrl,lastModifiedDateTime&$orderby=lastModifiedDateTime desc&$top=100`
+        `${section.pagesUrl}?$select=id,title,contentUrl,lastModifiedDateTime&$orderby=title desc&$top=100`
       while (url) {
         const res: { value: PageSummary[]; '@odata.nextLink'?: string } = await getJson(url)
         pages.push(...res.value)
@@ -120,17 +120,23 @@ export function createGraphClient(getToken: TokenProvider) {
       return extractMagicContent(await res.text())
     },
 
-    /** Replaces the page's markdown (the magic paragraph id changes on every replace) */
-    async savePageContent(page: PageSummary, markdown: string): Promise<void> {
+    /**
+     * Replaces the page's markdown (the magic paragraph id changes on every replace),
+     * optionally setting the title in the same request
+     */
+    async savePageContent(page: PageSummary, markdown: string, title?: string): Promise<void> {
       // id may be stale if someone saved meanwhile, so always look it up right before patching
       const current = await this.pageContent(page)
-      const command = current.id
-        ? { target: current.id, action: 'replace', content: encodeMagicParagraph(markdown) }
-        : { target: 'body', action: 'append', content: encodeMagicParagraph(markdown) }
+      const commands: object[] = [
+        current.id
+          ? { target: current.id, action: 'replace', content: encodeMagicParagraph(markdown) }
+          : { target: 'body', action: 'append', content: encodeMagicParagraph(markdown) },
+      ]
+      if (title !== undefined) commands.push({ target: 'title', action: 'replace', content: title })
       await request(page.contentUrl, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([command]),
+        body: JSON.stringify(commands),
       })
     },
 
